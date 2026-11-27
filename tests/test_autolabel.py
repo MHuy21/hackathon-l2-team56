@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from robotaxi.autolabel import AutoLabelConfig, Detection, dedupe, draft_labels, review_priority
-from robotaxi.classes import CAR, MOTORCYCLIST, OTHER_VEHICLE, PEDESTRIAN, SIGN, TRUCK
+from robotaxi.classes import CAR, MOTORCYCLE, MOTORCYCLIST, OTHER_VEHICLE, PEDESTRIAN, SIGN, TRUCK
 
 H, W = 480, 640
 IMG = np.zeros((H, W, 3), np.uint8)
@@ -48,8 +48,17 @@ def test_draft_labels_end_to_end():
 
 
 def test_thresholds_per_source():
-    cfg = AutoLabelConfig(min_score={"coco": 0.95, "openvocab": 0.95})
+    cfg = AutoLabelConfig(min_score={"coco": 0.95, "openvocab": 0.95}, min_score_by_name={}, big_object_min_score=0.95)
     assert draft_labels(IMG, [("coco", coco_detector), ("openvocab", openvocab_detector)], cfg).instances == []
+
+
+def test_per_class_and_big_vehicle_thresholds():
+    far_moto = Detection("motorcycle", 0.13, rect(600, 300, 615, 330))          # small far motorbike: kept (0.12)
+    big_truck = Detection("truck", 0.11, rect(0, 300, 300, 480))               # big truck at the edge: kept (0.10)
+    big_person = Detection("person", 0.11, rect(400, 100, 500, 400))           # big but a person: still needs 0.15
+    small_car = Detection("car", 0.2, rect(300, 50, 330, 70))                  # small car below 0.25: dropped
+    res = draft_labels(IMG, [("coco", lambda im: [far_moto, big_truck, big_person, small_car])])
+    assert sorted(i.cls for i in res.instances) == sorted([MOTORCYCLE, TRUCK])
 
 
 def test_dedupe_keeps_highest_score():

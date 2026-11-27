@@ -34,8 +34,12 @@ COCO_MAPPING = {
     "traffic light": "Traffic light", "stop sign": "Sign",
 }
 OPEN_VOCAB_PROMPTS = {
+    # Shape words matter: on VN camera frames YOLOE scored "circular traffic sign" 0.55-0.71 on a no-entry sign that
+    # "traffic sign" scored 0.07 (diagnostic 28/11 01:15, 3 golden-val frames).
+    "circular traffic sign": "Sign",
+    "triangular warning sign": "Sign",
+    "rectangular blue road sign": "Sign",
     "traffic sign": "Sign",
-    "road sign": "Sign",
     "cyclo": "Other vehicle",
     "three-wheeled cargo motorbike": "Other vehicle",
     "tuk-tuk": "Other vehicle",
@@ -61,8 +65,15 @@ Detector = Callable[[np.ndarray], list[Detection]]
 @dataclass
 class AutoLabelConfig:
     mapping: ClassMapping = field(default_factory=lambda: ClassMapping.from_dict({**COCO_MAPPING, **OPEN_VOCAB_PROMPTS}))
-    min_score: dict[str, float] = field(default_factory=lambda: {"coco": 0.30, "openvocab": 0.25})
-    default_min_score: float = 0.30
+    min_score: dict[str, float] = field(default_factory=lambda: {"coco": 0.25, "openvocab": 0.25})
+    default_min_score: float = 0.25
+    # Per source-class overrides. Far motorbikes / people on VN camera frames score 0.12-0.39 with the COCO model
+    # (same diagnostic): with a single 0.30 threshold most of the traffic was missing from the drafts.
+    min_score_by_name: dict[str, float] = field(default_factory=lambda: {"motorcycle": 0.12, "person": 0.15, "bicycle": 0.15})
+    # A large object (truck partly out of frame, container) is rarely a false positive but scored 0.11-0.14.
+    big_object_frac: float = 0.015
+    big_object_min_score: float = 0.10
+    big_object_names: tuple[str, ...] = ("car", "bus", "truck", "trailer", "shipping container on a truck")
     dup_iou: float = 0.6
     low_score: float = 0.5     # kept detections below this are flagged for review
 
@@ -102,10 +113,16 @@ def draft_labels(image: np.ndarray, detectors: Sequence[tuple[str, Detector]], c
     """Run every detector on ``image`` (RGB uint8) and build draft instances in the 11 competition classes."""
     cfg = cfg or AutoLabelConfig()
     dets: list[Detection] = []
+    big_px = cfg.big_object_frac * image.shape[0] * image.shape[1]
     for source, detect in detectors:
-        thr = cfg.min_score.get(source, cfg.default_min_score)
+        src_thr = cfg.min_score.get(source, cfg.default_min_score)
         for d in detect(image):
-            if d.score >= thr and d.name in cfg.mapping.target and cfg.mapping.target[d.name] is not None:
+            if d.name not in cfg.mapping.target or cfg.mapping.target[d.name] is None:
+                continue
+            thr = cfg.min_score_by_name.get(d.name, src_thr)
+            if d.name in cfg.big_object_names and d.mask.sum() >= big_px:
+                thr = min(thr, cfg.big_object_min_score)
+            if d.score >= thr:
                 d.source = source
                 dets.append(d)
     dets = dedupe(dets, cfg.dup_iou)
@@ -152,7 +169,7 @@ def _results_to_detections(res, names: dict[int, str] | Sequence[str]) -> list[D
     return [Detection(names[c], float(s), m) for c, s, m in zip(cls, conf, masks)]
 
 
-def ultralytics_seg_detector(weights: str = "yolo26x-seg.pt", conf: float = 0.2, device: str | None = None,
+def ultralytics_seg_detector(weights: str = "yolo26x-seg.pt", conf: float = 0.08, device: str | None = None,
                              imgsz: int = 1280) -> Detector:
     """COCO-pretrained Ultralytics segmentation model (any size: it only drafts labels, it is not submitted)."""
     from ultralytics import YOLO  # noqa: PLC0415
@@ -167,7 +184,7 @@ def ultralytics_seg_detector(weights: str = "yolo26x-seg.pt", conf: float = 0.2,
 
 
 def ultralytics_yoloe_detector(prompts: Sequence[str] = tuple(OPEN_VOCAB_PROMPTS), weights: str = "yoloe-11l-seg.pt",
-                               conf: float = 0.15, device: str | None = None, imgsz: int = 1280) -> Detector:
+                               conf: float = 0.08, device: str | None = None, imgsz: int = 1280) -> Detector:
     """Open-vocabulary YOLOE segmentation prompted with text (classes COCO does not have)."""
     from ultralytics import YOLOE  # noqa: PLC0415
 

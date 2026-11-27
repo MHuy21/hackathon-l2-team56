@@ -45,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--yoloe-weights", default="yoloe-11l-seg.pt")
     ap.add_argument("--no-openvocab", action="store_true")
     ap.add_argument("--sam", default=None, help="SAM 2 weights to refine masks from boxes, e.g. sam2.1_b.pt")
+    ap.add_argument("--coco-min", type=float, default=None, help="override the COCO-model score threshold")
+    ap.add_argument("--openvocab-min", type=float, default=None, help="override the YOLOE score threshold")
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--device", default=None)
     ap.add_argument("--limit", type=int, default=0, help="first N images only (quick test)")
@@ -57,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         detectors.append(("openvocab", ultralytics_yoloe_detector(weights=args.yoloe_weights, device=args.device, imgsz=args.imgsz)))
     segmenter = ultralytics_sam_segmenter(args.sam, args.device) if args.sam else None
     cfg = AutoLabelConfig()
+    if args.coco_min is not None:
+        cfg.min_score["coco"] = args.coco_min
+    if args.openvocab_min is not None:
+        cfg.min_score["openvocab"] = args.openvocab_min
 
     images = list(iter_images(args.images))
     if args.sample and len(images) > args.sample:
