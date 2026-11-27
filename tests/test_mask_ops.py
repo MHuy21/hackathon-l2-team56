@@ -67,6 +67,19 @@ def test_joined_pieces_do_not_cross_a_middle_piece():
     assert mo.mask_iou(m, mo.poly_to_mask(poly, H, W)) > 0.999
 
 
+def test_bridge_does_not_cut_through_a_thin_concave_piece():
+    # a thin bar with a tab sticking out on its far side: the closest vertex pair (hub corner -> tab tip)
+    # would cross the bar's own right edge; the join must pick a bridge that crosses nothing
+    hub = np.array([[12, 9], [20, 9], [20, 11], [12, 11]], float)
+    bar = np.array([[9, 0], [9, 20], [8, 20], [8, 10.5], [6, 10.5], [6, 9.5], [8, 9.5], [8, 0]], float)
+    poly = mo.join_components([hub, bar])
+    assert _proper_crossings(poly) == 0
+    union = np.zeros((30, 30), bool)
+    for r in (hub, bar):
+        union |= mo.poly_to_mask(r / 30, 30, 30)
+    assert mo.mask_iou(mo.poly_to_mask(poly / 30, 30, 30), union) == 1.0
+
+
 def test_hole_left_by_front_object_stays_empty():
     # a bus with a pedestrian standing fully inside its silhouette: after resolve_overlaps the bus has a hole
     bus = _mask(lambda x: cv2.rectangle(x, (100, 100), (400, 300), 1, -1))

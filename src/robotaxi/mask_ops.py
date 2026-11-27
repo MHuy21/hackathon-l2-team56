@@ -75,39 +75,59 @@ def too_small(mask: np.ndarray, min_short_side_ratio: float = MIN_SHORT_SIDE_RAT
 
 
 # ----------------------------------------------------------------------------------------------- mask -> polygon
-def _closest_pair(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
-    d = ((a[:, None, :] - b[None, :, :]) ** 2).sum(-1)
-    i, j = np.unravel_index(int(np.argmin(d)), d.shape)
-    return int(i), int(j)
+def _crosses_any(p: np.ndarray, q: np.ndarray, starts: np.ndarray, ends: np.ndarray) -> bool:
+    """True when segment p-q PROPERLY crosses one of the segments starts[k]-ends[k] (touching at an end does not
+    count): the same test as the official notebook's polygon_self_intersects."""
+    if len(starts) == 0:
+        return False
+
+    def orient(a, b, c):
+        return (b[..., 0] - a[..., 0]) * (c[..., 1] - a[..., 1]) - (b[..., 1] - a[..., 1]) * (c[..., 0] - a[..., 0])
+
+    return bool(((orient(p, q, starts) * orient(p, q, ends) < 0) & (orient(starts, ends, p) * orient(starts, ends, q) < 0)).any())
 
 
-def join_components(contours: Sequence[np.ndarray]) -> np.ndarray:
+def join_components(contours: Sequence[np.ndarray], candidates: int = 64) -> np.ndarray:
     """Join several closed contours (each (P, 2), pixel xy) into ONE polygon.
 
     The pieces are linked by a minimum spanning tree (Prim, from the largest piece): each piece hangs from the
-    NEAREST piece already linked, through the closest pair of vertices. Short bridges between neighbours rarely pass
-    through a third piece (a star from the largest piece did: the notebook then reports the polygon as self-crossing).
-    The walk goes out along a bridge, round the child piece (and its own children) and back along the same bridge, so
-    bridges enclose no area and the polygon rasterises (even-odd, as pycocotools does) to the union of the pieces.
+    NEAREST piece already linked. The bridge is the shortest vertex pair whose segment crosses NO edge of any piece and
+    no earlier bridge (up to ``candidates`` pairs are tried per piece pair). Plain "closest vertices" was not enough:
+    in 3 of 15k COCO polygons the bridge cut through a thin, concave piece and the notebook reported the polygon as
+    self-crossing. The walk goes out along a bridge, round the child piece (and its own children) and back along the
+    same bridge, so bridges enclose no area and the polygon rasterises (even-odd, as pycocotools and cv2.fillPoly
+    do) to the union of the pieces.
     """
     rings = [np.asarray(c, dtype=np.float64).reshape(-1, 2) for c in contours if len(c) >= 3]
     if not rings:
         return np.zeros((0, 2))
     if len(rings) == 1:
         return rings[0]
+    starts = np.concatenate(rings)
+    ends = np.concatenate([np.roll(r, -1, axis=0) for r in rings])
     root = int(np.argmax([abs(cv2.contourArea(r.astype(np.float32))) for r in rings]))
     linked, todo = [root], set(range(len(rings))) - {root}
     attach: dict[int, dict[int, list[tuple[int, int]]]] = {k: {} for k in range(len(rings))}  # node -> vertex -> [(child, child vertex)]
     while todo:
-        best = None
+        best = fallback = None
         for a in linked:
-            for b in todo:
-                i, j = _closest_pair(rings[a], rings[b])
-                d = float(((rings[a][i] - rings[b][j]) ** 2).sum())
-                if best is None or d < best[0]:
-                    best = (d, a, i, b, j)
-        _, a, i, b, j = best
+            for b in sorted(todo):
+                d = ((rings[a][:, None, :] - rings[b][None, :, :]) ** 2).sum(-1)
+                order = np.argsort(d, axis=None)[:candidates]
+                i0, j0 = np.unravel_index(int(order[0]), d.shape)
+                if fallback is None or d[i0, j0] < fallback[0]:
+                    fallback = (float(d[i0, j0]), a, int(i0), b, int(j0))
+                for flat in order:
+                    i, j = np.unravel_index(int(flat), d.shape)
+                    if best is not None and d[i, j] >= best[0]:
+                        break
+                    if not _crosses_any(rings[a][i], rings[b][j], starts, ends):
+                        best = (float(d[i, j]), a, int(i), b, int(j))
+                        break
+        _, a, i, b, j = best if best is not None else fallback
         attach[a].setdefault(i, []).append((b, j))
+        starts = np.vstack([starts, rings[a][i][None]])  # later bridges must not cross this one either
+        ends = np.vstack([ends, rings[b][j][None]])
         linked.append(b)
         todo.discard(b)
 
@@ -273,7 +293,8 @@ def disjoint_polygons(masks: Sequence[np.ndarray], front_to_back: Sequence[int] 
         if not changed:
             break
     for k in range(len(polys)):
-        if raster[k] is not None and area_at_scale(raster[k].sum(), h, w) < MIN_GT_AREA_PX:
+        # size rules again on what will actually be rasterised (a polygon can come out a pixel thinner than its mask)
+        if raster[k] is not None and too_small(raster[k]):
             polys[k] = None
     return polys
 
