@@ -1,6 +1,7 @@
-# Round 0 (baseline): COCO traffic subset + Vietnamese box dataset segmented with SAM2.
-# Val must be Vietnamese street images (closest to the hidden test set). Until B delivers the golden val,
-# the VN box->SAM source is split 80/20 ("temporary val", noted in the experiment log).
+# Round 0 (baseline): COCO traffic subset + Vietnamese street images with DRAFT labels (scripts/label/autolabel.py).
+# B decided to use only the images of the VN sources (Roboflow Kien v1, CC BY 4.0; Kaggle duongtran1909 v1, CC0),
+# not their annotations. Drafts are not yet corrected by hand, so the VN 20% split is a "temporary val" (noted in the
+# experiment log); from R1 the hand-corrected golden val replaces it.
 name: du_lieu_r00
 seed: 61
 near_dup_hamming: 2
@@ -8,10 +9,16 @@ min_val_per_class: 10
 sources:
   - name: coco2017
     prefix: coco
-    path: data/interim/coco          # unzip Drive team56/coco_r00.zip here (images/, labels/)
+    path: data/interim/coco                      # unzip Drive team56/coco_r00.zip here (images/, labels/)
     role: train
-  - name: vntraffic
-    path: data/interim/vntraffic     # output of scripts/data/bbox_to_seg_sam.py (B picks the dataset)
+  - name: vn_roboflow_kien
+    prefix: rfkien
+    path: data/interim/drafts/roboflow_kien      # autolabel.py output for the 790 Roboflow images
     role: auto
     val_ratio: 0.2
     group_regex: '^(.*?)(?:_(?:jpe?g|png))?\.rf\.[0-9a-f]+$'   # Roboflow augmented copies of one photo share a group
+  - name: vn_kaggle_duongtran
+    prefix: kgvn
+    path: data/interim/drafts/kaggle_vn          # autolabel.py output for the selected Kaggle subset
+    role: auto
+    val_ratio: 0.2

@@ -3,6 +3,7 @@
     python scripts/label/autolabel.py --images /content/vn_batch_01 --out /content/drafts/batch_01
     python scripts/label/autolabel.py --images ... --out ... --sam sam2.1_b.pt        # sharper masks, ~2x slower
     python scripts/label/autolabel.py --images ... --out ... --no-openvocab           # COCO classes only
+    python scripts/label/autolabel.py --images kaggle_vn/ --out ... --sample 1500     # seeded subset of a big source
 
 Output (a complete YOLO-seg folder, usable by build_dataset.py and to_cvat.py):
     <out>/images/<stem>.<ext>   copy of each input image
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import random
 import shutil
 import sys
 import time
@@ -27,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from robotaxi.autolabel import (  # noqa: E402
     AutoLabelConfig, draft_labels, review_priority, ultralytics_seg_detector, ultralytics_yoloe_detector,
 )
-from robotaxi.classes import CLASSES, NC  # noqa: E402
+from robotaxi.classes import CLASSES, NC, TEAM_ID  # noqa: E402
 from robotaxi.sources.bbox_sam import ultralytics_sam_segmenter  # noqa: E402
 from robotaxi.sources.coco import class_counts  # noqa: E402
 from robotaxi.yoloseg_io import iter_images, write_labels  # noqa: E402
@@ -45,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sam", default=None, help="SAM 2 weights to refine masks from boxes, e.g. sam2.1_b.pt")
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--device", default=None)
-    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--limit", type=int, default=0, help="first N images only (quick test)")
+    ap.add_argument("--sample", type=int, default=0, help="seeded random sample of N images (large sources)")
+    ap.add_argument("--seed", type=int, default=TEAM_ID)
     args = ap.parse_args(argv)
 
     detectors = [("coco", ultralytics_seg_detector(args.weights, device=args.device, imgsz=args.imgsz))]
@@ -54,7 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     segmenter = ultralytics_sam_segmenter(args.sam, args.device) if args.sam else None
     cfg = AutoLabelConfig()
 
-    images = list(iter_images(args.images))[: args.limit or None]
+    images = list(iter_images(args.images))
+    if args.sample and len(images) > args.sample:
+        images = sorted(random.Random(args.seed).sample(images, args.sample))
+    images = images[: args.limit or None]
     report_path = args.out / "autolabel_report.csv"
     rows = []
     if report_path.is_file():
