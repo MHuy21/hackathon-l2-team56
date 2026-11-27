@@ -14,7 +14,10 @@ coco2017:
     road scenes only (>= 1 car/bus/truck/motorcycle/bicycle/traffic light/stop sign); images with crowd regions of a
     used category or with a train / airplane / boat are skipped; seeded (TEAM_ID=61) weighted sample favouring rare classes.
   target_images: 3500
-  images_used: null        # fill from manifest after the run
+  images_used: 2925        # run 2026-11-27 on Colab: 3500 selected, 569 skipped (rider candidates), 6 only tiny objects
+  instances: {Car: 4987, Bus: 942, Truck: 1111, Other vehicle: 0, Motorcycle: 580, Motorcyclist: 0, Bicycle: 734,
+              Cyclist: 0, Pedestrian: 4874, Sign: 647, Traffic light: 1552}
+  artifact: Google Drive team56/coco_r00.zip (images, labels, manifest_coco.csv, review_riders.csv)
   mapping:
     car: Car
     bus: Bus
