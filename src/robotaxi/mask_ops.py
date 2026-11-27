@@ -21,6 +21,8 @@ from shapely.geometry import CAP_STYLE, JOIN_STYLE, LineString, Point, Polygon
 
 from .classes import IMGSZ, MIN_GT_AREA_PX, MIN_SHORT_SIDE_RATIO
 
+LABEL_DECIMALS = 6  # yoloseg_io.DEFAULT_PRECISION
+
 
 # ----------------------------------------------------------------------------------------------- rasterisation
 def poly_to_rle(poly: np.ndarray, height: int, width: int) -> dict:
@@ -124,8 +126,11 @@ def join_components(contours: Sequence[np.ndarray]) -> np.ndarray:
     return np.asarray(walk(root, 0, False))
 
 
-def _outer_rings(contour_px: np.ndarray) -> list[np.ndarray]:
-    """Rings (pixel-edge coordinates) of one OpenCV contour, grown by half a pixel.
+_MITRE = dict(join_style=JOIN_STYLE.mitre, mitre_limit=2.0)
+
+
+def _grown_outer(contour_px: np.ndarray):
+    """Region (shapely) of one OpenCV OUTER contour, grown by half a pixel.
 
     OpenCV contours run through the CENTRES of the boundary pixels, so a polygon drawn through them loses half a
     pixel on every side (about 10% of the area of a 20 px sign, enough to fail the high IoU thresholds). Shifting to
@@ -133,37 +138,64 @@ def _outer_rings(contour_px: np.ndarray) -> list[np.ndarray]:
     round-trip IoU = 1.00 on small squares/discs, 0.999 on large shapes (vs 0.87-0.99 without).
     """
     c = contour_px.reshape(-1, 2).astype(np.float64) + 0.5
-    if len(c) >= 3:
-        geom = make_valid(Polygon(c))
-        grown = geom.buffer(0.5, join_style=JOIN_STYLE.mitre, mitre_limit=2.0)
-    else:
-        grown = Polygon()
+    grown = make_valid(Polygon(c)).buffer(0.5, **_MITRE) if len(c) >= 3 else Polygon()
     if grown.is_empty:  # one-pixel-wide line or single pixel: buffer the skeleton instead
         skeleton = LineString(c) if len(c) >= 2 else Point(c[0])
-        grown = skeleton.buffer(0.5, cap_style=CAP_STYLE.square, join_style=JOIN_STYLE.mitre, mitre_limit=2.0)
-    parts = list(grown.geoms) if hasattr(grown, "geoms") else [grown]
-    return [np.asarray(p.exterior.coords)[:-1] for p in parts if isinstance(p, Polygon) and not p.is_empty]
+        grown = skeleton.buffer(0.5, cap_style=CAP_STYLE.square, **_MITRE)
+    return grown
+
+
+def _shrunk_hole(contour_px: np.ndarray):
+    """Region of one OpenCV HOLE contour. The contour runs through the centres of the foreground pixels around the
+    hole, so the hole itself is that polygon shrunk by half a pixel (a 1-pixel hole vanishes)."""
+    c = contour_px.reshape(-1, 2).astype(np.float64) + 0.5
+    if len(c) < 3:
+        return Polygon()
+    return make_valid(Polygon(c)).buffer(-0.5, **_MITRE)
+
+
+def _polygons(geom) -> list[Polygon]:
+    parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+    return [p for p in parts if isinstance(p, Polygon) and not p.is_empty]
 
 
 def mask_to_polygon(mask: np.ndarray, epsilon_px: float = 0.25, min_component_px: int = 9) -> np.ndarray | None:
-    """Normalised polygon (P, 2) of a boolean mask, pieces joined into one; ``None`` when nothing usable remains.
+    """Normalised polygon (P, 2) of a boolean mask -- pieces AND holes in one line; ``None`` when nothing remains.
+
+    Holes matter: after :func:`resolve_overlaps`, an object behind a smaller one (a bus behind a pedestrian) has a
+    hole where the pedestrian is. Filling it would make the two labels overlap again. Every ring (outer boundaries
+    and holes) is joined by zero-width bridges; pycocotools (the grader) and cv2.fillPoly (Ultralytics training) both
+    fill even-odd, so holes stay empty (both checked).
 
     ``epsilon_px``: Douglas-Peucker tolerance in pixels. 0.25 re-rasterises EXACTLY (IoU 1.0 measured); 0.5 halves the
-    vertex count but adds ~2% pixels on a 15 px disc.
-    Components smaller than ``min_component_px`` pixels are dropped (anti-aliasing specks). Holes are not
-    represented (like a human-drawn polygon).
+    vertex count but adds ~2% pixels on a 15 px disc. Rings (pieces or holes) smaller than ``min_component_px``
+    pixels are dropped (anti-aliasing specks).
     """
     h, w = mask.shape
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    contours, hier = cv2.findContours(mask.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+    hier = hier[0]
+    rings = []
+    for k, c in enumerate(contours):
+        if hier[k][3] != -1:  # a hole: handled with its outer contour
+            continue
+        region = _grown_outer(c)
+        child = hier[k][2]
+        while child != -1:
+            region = region.difference(_shrunk_hole(contours[child]))
+            child = hier[child][0]
+        for poly in _polygons(region):
+            for ring in [np.asarray(poly.exterior.coords)[:-1]] + [np.asarray(r.coords)[:-1] for r in poly.interiors]:
+                rings.append(ring)
     kept = []
-    for c in contours:
-        for ring in _outer_rings(c):
-            if abs(cv2.contourArea(ring.astype(np.float32))) < min_component_px:
-                continue
-            if epsilon_px > 0:
-                approx = cv2.approxPolyDP(ring.astype(np.float32).reshape(-1, 1, 2), epsilon_px, True).reshape(-1, 2)
-                ring = approx.astype(np.float64) if len(approx) >= 3 else ring
-            kept.append(ring)
+    for ring in rings:
+        if abs(cv2.contourArea(ring.astype(np.float32))) < min_component_px:
+            continue
+        if epsilon_px > 0:
+            approx = cv2.approxPolyDP(ring.astype(np.float32).reshape(-1, 1, 2), epsilon_px, True).reshape(-1, 2)
+            ring = approx.astype(np.float64) if len(approx) >= 3 else ring
+        kept.append(ring)
     if not kept:
         return None
     poly = join_components(kept)
@@ -199,6 +231,59 @@ def resolve_overlaps(masks: Sequence[np.ndarray], front_to_back: Sequence[int] |
         out[k] = m
         taken |= m
     return out
+
+
+def disjoint_polygons(masks: Sequence[np.ndarray], front_to_back: Sequence[int] | None = None,
+                      max_rounds: int = 4) -> list[np.ndarray | None]:
+    """Polygons (normalised) of objects made disjoint, checked AFTER rasterisation; ``None`` for dropped objects.
+
+    resolve_overlaps makes the MASKS disjoint, but a polygon re-rasterised by pycocotools can still spill one pixel
+    onto a touching neighbour. Walking front to back, the pixels of a polygon that fall on the raster of an object in
+    front are cut from its mask and the polygon is redrawn (a couple of rounds settle it). Objects that become too
+    small (guideline size rule, or < 64 px at 640 scale after rasterisation) are dropped.
+    """
+    if not masks:
+        return []
+    h, w = masks[0].shape
+    order = list(front_to_back) if front_to_back is not None else depth_order_by_bottom(masks)
+    vis = resolve_overlaps(masks, order)
+    def polygon(m: np.ndarray) -> np.ndarray | None:
+        # quantised exactly like the label file (6 decimals), so the check rasterises what will be written
+        p = None if too_small(m) else mask_to_polygon(m)
+        return None if p is None else np.round(p, LABEL_DECIMALS)
+
+    polys: list[np.ndarray | None] = [polygon(m) for m in vis]
+    raster: list[np.ndarray | None] = [poly_to_mask(p, h, w) if p is not None else None for p in polys]
+    for rnd in range(max_rounds):
+        changed = False
+        taken = np.zeros((h, w), dtype=bool)
+        for k in order:
+            if raster[k] is None:
+                continue
+            clash = raster[k] & taken
+            if clash.any():
+                if rnd > 0:  # a 1-pixel notch can be re-covered by the redrawn polygon: cut 1 px wider next time
+                    clash = cv2.dilate(clash.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+                vis[k] = vis[k] & ~clash
+                polys[k] = polygon(vis[k])
+                raster[k] = poly_to_mask(polys[k], h, w) if polys[k] is not None else None
+                changed = True
+            if raster[k] is not None:
+                taken |= raster[k]
+        if not changed:
+            break
+    for k in range(len(polys)):
+        if raster[k] is not None and area_at_scale(raster[k].sum(), h, w) < MIN_GT_AREA_PX:
+            polys[k] = None
+    return polys
+
+
+def objects_to_instances(objects: Sequence[tuple[int, np.ndarray]]) -> list["Instance"]:
+    """``[(class id, mask)]`` -> label instances: disjoint after rasterisation, small objects removed."""
+    from .yoloseg_io import Instance  # noqa: PLC0415 - keeps mask_ops importable on its own
+
+    polys = disjoint_polygons([m for _, m in objects])
+    return [Instance(cid, p) for (cid, _), p in zip(objects, polys) if p is not None and len(p) >= 3]
 
 
 def overlap_pairs(masks: Sequence[np.ndarray], min_pixels: int = 1) -> list[tuple[int, int, int]]:

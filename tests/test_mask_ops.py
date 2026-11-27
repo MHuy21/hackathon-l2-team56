@@ -67,6 +67,47 @@ def test_joined_pieces_do_not_cross_a_middle_piece():
     assert mo.mask_iou(m, mo.poly_to_mask(poly, H, W)) > 0.999
 
 
+def test_hole_left_by_front_object_stays_empty():
+    # a bus with a pedestrian standing fully inside its silhouette: after resolve_overlaps the bus has a hole
+    bus = _mask(lambda x: cv2.rectangle(x, (100, 100), (400, 300), 1, -1))
+    ped = _mask(lambda x: cv2.rectangle(x, (200, 150), (240, 260), 1, -1))
+    bus_vis, ped_vis = mo.resolve_overlaps([bus, ped], front_to_back=[1, 0])
+    back = mo.poly_to_mask(mo.mask_to_polygon(bus_vis), H, W)
+    assert not np.logical_and(back, ped_vis).any()           # no overlap with the pedestrian
+    assert mo.mask_iou(back, bus_vis) > 0.999
+    cvm = np.zeros((H, W), np.uint8)                          # Ultralytics rasterises with cv2.fillPoly
+    cv2.fillPoly(cvm, [np.round(mo.mask_to_polygon(bus_vis) * [W, H]).astype(np.int32)], 1)
+    assert cvm[200, 220] == 0
+    assert _proper_crossings(mo.mask_to_polygon(bus_vis) * [W, H]) == 0
+
+
+def test_island_inside_hole_is_kept():
+    m = _mask(lambda x: (cv2.rectangle(x, (100, 100), (400, 300), 1, -1), cv2.rectangle(x, (180, 140), (320, 260), 0, -1),
+                         cv2.rectangle(x, (230, 180), (270, 220), 1, -1)))
+    back = mo.poly_to_mask(mo.mask_to_polygon(m), H, W)
+    assert mo.mask_iou(back, m) > 0.999
+
+
+def test_disjoint_polygons_do_not_overlap_after_rasterisation():
+    rng = np.random.default_rng(61)
+    for _ in range(5):
+        masks = []
+        for _ in range(12):  # many overlapping / touching blobs
+            cx, cy, r = int(rng.integers(50, W - 50)), int(rng.integers(50, H - 50)), int(rng.integers(8, 60))
+            masks.append(_mask(lambda x, cx=cx, cy=cy, r=r: cv2.circle(x, (cx, cy), r, 1, -1)))
+        polys = mo.disjoint_polygons(masks)
+        rasters = [mo.poly_to_mask(np.round(p, 6), H, W) for p in polys if p is not None]
+        assert rasters
+        assert mo.overlap_pairs(rasters) == []
+
+
+def test_objects_to_instances_drops_tiny_and_keeps_classes():
+    big = _mask(lambda x: cv2.rectangle(x, (100, 100), (300, 300), 1, -1))
+    tiny = _mask(lambda x: cv2.rectangle(x, (400, 400), (403, 403), 1, -1))
+    insts = mo.objects_to_instances([(2, big), (9, tiny)])
+    assert [i.cls for i in insts] == [2]
+
+
 def test_specks_dropped_and_empty_mask():
     assert mo.mask_to_polygon(np.zeros((H, W), bool)) is None
     m = _mask(lambda x: x.__setitem__((5, 5), 1))

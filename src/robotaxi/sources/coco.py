@@ -24,7 +24,7 @@ import numpy as np
 from pycocotools import mask as mask_utils
 
 from ..classes import BUS, CAR, NC, SIGN, TRAFFIC_LIGHT, TRUCK
-from ..mask_ops import mask_to_polygon, resolve_overlaps, too_small
+from ..mask_ops import objects_to_instances
 from ..rider_merge import drop_passengers, merge_riders, rider_candidates
 from ..yoloseg_io import Instance
 
@@ -139,21 +139,7 @@ def convert_image(anns: Iterable[dict], cat_name: dict[int, str], height: int, w
     objects = merge_riders(persons, groups["motorcycle"], groups["bicycle"], decisions=[decisions.get(p) for p in pids])
     for name, cid in DIRECT.items():
         objects += [(cid, m) for m in groups[name]]
-    return Converted(_finish(objects))
-
-
-def _finish(objects: list[tuple[int, np.ndarray]]) -> list[Instance]:
-    if not objects:
-        return []
-    masks = resolve_overlaps([m for _, m in objects])
-    out = []
-    for (cid, _), m in zip(objects, masks):
-        if too_small(m):
-            continue
-        poly = mask_to_polygon(m)
-        if poly is not None and len(poly) >= 3:
-            out.append(Instance(cid, poly))
-    return out
+    return Converted(objects_to_instances(objects))
 
 
 def class_counts(instances: Iterable[Instance]) -> list[int]:

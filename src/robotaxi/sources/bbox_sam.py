@@ -21,7 +21,7 @@ import numpy as np
 import yaml
 
 from ..classes import BUS, CAR, CLASSES, TRUCK, class_id
-from ..mask_ops import mask_to_polygon, resolve_overlaps, too_small
+from ..mask_ops import objects_to_instances
 from ..rider_merge import drop_passengers, merge_riders
 from ..yoloseg_io import Instance
 
@@ -98,15 +98,7 @@ def convert_boxes(image: np.ndarray, boxes_xyxy: np.ndarray, source_names: Seque
     objects = merge_riders(persons, generic["motorcycle"], generic["bicycle"]) + direct
     if not objects:
         return []
-    disjoint = resolve_overlaps([m for _, m in objects])
-    out = []
-    for (cid, _), m in zip(objects, disjoint):
-        if too_small(m):
-            continue
-        poly = mask_to_polygon(m)
-        if poly is not None:
-            out.append(Instance(cid, poly))
-    return out
+    return objects_to_instances(objects)
 
 
 def ultralytics_sam_segmenter(weights: str = "sam2.1_b.pt", device: str | None = None) -> Segmenter:

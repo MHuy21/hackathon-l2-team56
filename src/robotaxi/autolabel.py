@@ -23,7 +23,7 @@ from typing import Callable, Sequence
 import numpy as np
 
 from .classes import BUS, CAR, CLASSES, MOTORCYCLIST, CYCLIST, NC, TRUCK
-from .mask_ops import bbox_of_mask, mask_iou, mask_to_polygon, resolve_overlaps, too_small
+from .mask_ops import bbox_of_mask, mask_iou, objects_to_instances
 from .rider_merge import drop_passengers, merge_riders, rider_candidates
 from .sources.bbox_sam import GENERIC, ClassMapping, Segmenter
 from .yoloseg_io import Instance
@@ -127,14 +127,7 @@ def draft_labels(image: np.ndarray, detectors: Sequence[tuple[str, Detector]], c
     persons = [generic["person"][i] for i in keep]
     n_candidates = len(rider_candidates(persons, generic["motorcycle"], generic["bicycle"]))
     objects = merge_riders(persons, generic["motorcycle"], generic["bicycle"]) + direct
-    disjoint = resolve_overlaps([m for _, m in objects]) if objects else []
-    out = []
-    for (cid, _), m in zip(objects, disjoint):
-        if too_small(m):
-            continue
-        poly = mask_to_polygon(m)
-        if poly is not None:
-            out.append(Instance(cid, poly))
+    out = objects_to_instances(objects)
     flags = {"detections": len(dets), "low_score": low, "rider_merges": n_candidates,
              "passengers_dropped": len(generic["person"]) - len(keep),
              "riders": sum(i.cls in (MOTORCYCLIST, CYCLIST) for i in out)}
