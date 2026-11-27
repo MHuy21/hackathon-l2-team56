@@ -1,0 +1,201 @@
+"""Mask <-> polygon conversion, overlap resolution and small-object rules.
+
+Rasterisation uses pycocotools ``frPyObjects`` -- the same call the grader uses to turn label polygons into ground
+truth masks -- so areas and IoUs computed here match the scorer. Conventions from the labeling guideline:
+
+* masks of different instances never overlap: the object in FRONT keeps the pixels;
+* one instance = one polygon line, so a mask split into pieces (occlusion by a pole, a wire...) is joined into a
+  single polygon with zero-width bridges (rasterises to the union of the pieces);
+* objects whose visible box has a short side < 1.25% of the image long side are not labelled, and ground truth whose
+  area at 640 scale is < 64 px is ignored by the scorer anyway.
+"""
+from __future__ import annotations
+
+from typing import Sequence
+
+import cv2
+import numpy as np
+from pycocotools import mask as mask_utils
+from shapely import make_valid
+from shapely.geometry import CAP_STYLE, JOIN_STYLE, LineString, Point, Polygon
+
+from .classes import IMGSZ, MIN_GT_AREA_PX, MIN_SHORT_SIDE_RATIO
+
+
+# ----------------------------------------------------------------------------------------------- rasterisation
+def poly_to_rle(poly: np.ndarray, height: int, width: int) -> dict:
+    """pycocotools RLE of one NORMALISED polygon at (height, width): identical to the grader's ``rasterize_polygon``."""
+    flat = (np.asarray(poly, dtype=np.float64).reshape(-1, 2) * np.array([width, height], dtype=np.float64)).reshape(-1).tolist()
+    return mask_utils.frPyObjects([flat], height, width)[0]
+
+
+def poly_to_mask(poly: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Boolean (H, W) mask of one normalised polygon."""
+    return mask_utils.decode(poly_to_rle(poly, height, width)).astype(bool)
+
+
+def mask_to_rle(mask: np.ndarray) -> dict:
+    return mask_utils.encode(np.asfortranarray(mask.astype(np.uint8)))
+
+
+def area_at_scale(pixels: float, height: int, width: int, imgsz: int = IMGSZ) -> float:
+    """Pixel area -> area at the 640 letterbox scale used by the scorer's ignore rule."""
+    r = imgsz / max(height, width)
+    return float(pixels) * r * r
+
+
+def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    inter = np.logical_and(a, b).sum()
+    union = np.logical_or(a, b).sum()
+    return float(inter / union) if union else 0.0
+
+
+# ----------------------------------------------------------------------------------------------- size rules
+def bbox_of_mask(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """(x0, y0, x1, y1) inclusive-exclusive of the True pixels, or None for an empty mask."""
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def too_small(mask: np.ndarray, min_short_side_ratio: float = MIN_SHORT_SIDE_RATIO, min_area_640: float = MIN_GT_AREA_PX) -> bool:
+    """True when the guideline says "do not label": visible box short side < 1.25% of the image long side, or the
+    mask area at 640 scale is below the scorer's ignore threshold."""
+    h, w = mask.shape
+    box = bbox_of_mask(mask)
+    if box is None:
+        return True
+    short = min(box[2] - box[0], box[3] - box[1])
+    if short < min_short_side_ratio * max(h, w):
+        return True
+    return area_at_scale(mask.sum(), h, w) < min_area_640
+
+
+# ----------------------------------------------------------------------------------------------- mask -> polygon
+def _closest_pair(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
+    d = ((a[:, None, :] - b[None, :, :]) ** 2).sum(-1)
+    i, j = np.unravel_index(int(np.argmin(d)), d.shape)
+    return int(i), int(j)
+
+
+def join_components(contours: Sequence[np.ndarray]) -> np.ndarray:
+    """Join several closed contours (each (P, 2), pixel xy) into ONE polygon.
+
+    The largest contour is the hub; every other contour is visited through a bridge from its closest hub vertex and
+    the walk returns along the same bridge. Bridges are traversed twice, so they enclose no area and the polygon
+    rasterises (even-odd, as pycocotools does) to the union of the pieces.
+    """
+    contours = [np.asarray(c, dtype=np.float64).reshape(-1, 2) for c in contours if len(c) >= 3]
+    if not contours:
+        return np.zeros((0, 2))
+    if len(contours) == 1:
+        return contours[0]
+    areas = [abs(cv2.contourArea(c.astype(np.float32))) for c in contours]
+    hub_i = int(np.argmax(areas))
+    hub = contours[hub_i]
+    detours: dict[int, list[np.ndarray]] = {}
+    for k, c in enumerate(contours):
+        if k == hub_i:
+            continue
+        i, j = _closest_pair(hub, c)
+        loop = np.concatenate([np.roll(c, -j, axis=0), c[j:j + 1]])  # full loop that starts and ends at the link vertex
+        detours.setdefault(i, []).append(np.concatenate([loop, hub[i:i + 1]]))  # ... then back to the hub vertex
+    out = []
+    for i, p in enumerate(hub):
+        out.append(p[None, :])
+        for d in detours.get(i, []):
+            out.append(d)
+    return np.concatenate(out)
+
+
+def _outer_rings(contour_px: np.ndarray) -> list[np.ndarray]:
+    """Rings (pixel-edge coordinates) of one OpenCV contour, grown by half a pixel.
+
+    OpenCV contours run through the CENTRES of the boundary pixels, so a polygon drawn through them loses half a
+    pixel on every side (about 10% of the area of a 20 px sign, enough to fail the high IoU thresholds). Shifting to
+    continuous coordinates (+0.5) and buffering by 0.5 px with mitred joins gives back the pixel edges: measured
+    round-trip IoU = 1.00 on small squares/discs, 0.999 on large shapes (vs 0.87-0.99 without).
+    """
+    c = contour_px.reshape(-1, 2).astype(np.float64) + 0.5
+    if len(c) >= 3:
+        geom = make_valid(Polygon(c))
+        grown = geom.buffer(0.5, join_style=JOIN_STYLE.mitre, mitre_limit=2.0)
+    else:
+        grown = Polygon()
+    if grown.is_empty:  # one-pixel-wide line or single pixel: buffer the skeleton instead
+        skeleton = LineString(c) if len(c) >= 2 else Point(c[0])
+        grown = skeleton.buffer(0.5, cap_style=CAP_STYLE.square, join_style=JOIN_STYLE.mitre, mitre_limit=2.0)
+    parts = list(grown.geoms) if hasattr(grown, "geoms") else [grown]
+    return [np.asarray(p.exterior.coords)[:-1] for p in parts if isinstance(p, Polygon) and not p.is_empty]
+
+
+def mask_to_polygon(mask: np.ndarray, epsilon_px: float = 0.25, min_component_px: int = 9) -> np.ndarray | None:
+    """Normalised polygon (P, 2) of a boolean mask, pieces joined into one; ``None`` when nothing usable remains.
+
+    ``epsilon_px``: Douglas-Peucker tolerance in pixels. 0.25 re-rasterises EXACTLY (IoU 1.0 measured); 0.5 halves the
+    vertex count but adds ~2% pixels on a 15 px disc.
+    Components smaller than ``min_component_px`` pixels are dropped (anti-aliasing specks). Holes are not
+    represented (like a human-drawn polygon).
+    """
+    h, w = mask.shape
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    kept = []
+    for c in contours:
+        for ring in _outer_rings(c):
+            if abs(cv2.contourArea(ring.astype(np.float32))) < min_component_px:
+                continue
+            if epsilon_px > 0:
+                approx = cv2.approxPolyDP(ring.astype(np.float32).reshape(-1, 1, 2), epsilon_px, True).reshape(-1, 2)
+                ring = approx.astype(np.float64) if len(approx) >= 3 else ring
+            kept.append(ring)
+    if not kept:
+        return None
+    poly = join_components(kept)
+    poly[:, 0] /= w
+    poly[:, 1] /= h
+    return np.clip(poly, 0.0, 1.0)
+
+
+# ----------------------------------------------------------------------------------------------- overlaps
+def depth_order_by_bottom(masks: Sequence[np.ndarray]) -> list[int]:
+    """Indices front-to-back for a road camera: the lower the bottom edge of an object in the image, the closer it is.
+    Ties: the smaller object first (it is usually the one in front, e.g. a pedestrian before a bus)."""
+    keys = []
+    for k, m in enumerate(masks):
+        box = bbox_of_mask(m)
+        bottom = box[3] if box else -1
+        keys.append((-bottom, int(m.sum()), k))
+    return [k for *_, k in sorted(keys)]
+
+
+def resolve_overlaps(masks: Sequence[np.ndarray], front_to_back: Sequence[int] | None = None) -> list[np.ndarray]:
+    """Make masks disjoint: walking front to back, every mask loses the pixels already taken by objects in front.
+    Returns masks in the ORIGINAL order (some may become empty or tiny: filter them afterwards)."""
+    if not masks:
+        return []
+    order = list(front_to_back) if front_to_back is not None else depth_order_by_bottom(masks)
+    if sorted(order) != list(range(len(masks))):
+        raise ValueError("front_to_back must be a permutation of the mask indices")
+    taken = np.zeros_like(masks[0], dtype=bool)
+    out: list[np.ndarray] = [np.zeros(0)] * len(masks)
+    for k in order:
+        m = masks[k].astype(bool) & ~taken
+        out[k] = m
+        taken |= m
+    return out
+
+
+def overlap_pairs(masks: Sequence[np.ndarray], min_pixels: int = 1) -> list[tuple[int, int, int]]:
+    """``(i, j, overlapping pixels)`` for every pair of masks sharing at least ``min_pixels`` pixels."""
+    out = []
+    boxes = [bbox_of_mask(m) for m in masks]
+    for i in range(len(masks)):
+        for j in range(i + 1, len(masks)):
+            a, b = boxes[i], boxes[j]
+            if a is None or b is None or a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]:
+                continue
+            n = int(np.logical_and(masks[i], masks[j]).sum())
+            if n >= min_pixels:
+                out.append((i, j, n))
+    return out
