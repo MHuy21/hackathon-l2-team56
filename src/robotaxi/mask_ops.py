@@ -82,31 +82,46 @@ def _closest_pair(a: np.ndarray, b: np.ndarray) -> tuple[int, int]:
 def join_components(contours: Sequence[np.ndarray]) -> np.ndarray:
     """Join several closed contours (each (P, 2), pixel xy) into ONE polygon.
 
-    The largest contour is the hub; every other contour is visited through a bridge from its closest hub vertex and
-    the walk returns along the same bridge. Bridges are traversed twice, so they enclose no area and the polygon
-    rasterises (even-odd, as pycocotools does) to the union of the pieces.
+    The pieces are linked by a minimum spanning tree (Prim, from the largest piece): each piece hangs from the
+    NEAREST piece already linked, through the closest pair of vertices. Short bridges between neighbours rarely pass
+    through a third piece (a star from the largest piece did: the notebook then reports the polygon as self-crossing).
+    The walk goes out along a bridge, round the child piece (and its own children) and back along the same bridge, so
+    bridges enclose no area and the polygon rasterises (even-odd, as pycocotools does) to the union of the pieces.
     """
-    contours = [np.asarray(c, dtype=np.float64).reshape(-1, 2) for c in contours if len(c) >= 3]
-    if not contours:
+    rings = [np.asarray(c, dtype=np.float64).reshape(-1, 2) for c in contours if len(c) >= 3]
+    if not rings:
         return np.zeros((0, 2))
-    if len(contours) == 1:
-        return contours[0]
-    areas = [abs(cv2.contourArea(c.astype(np.float32))) for c in contours]
-    hub_i = int(np.argmax(areas))
-    hub = contours[hub_i]
-    detours: dict[int, list[np.ndarray]] = {}
-    for k, c in enumerate(contours):
-        if k == hub_i:
-            continue
-        i, j = _closest_pair(hub, c)
-        loop = np.concatenate([np.roll(c, -j, axis=0), c[j:j + 1]])  # full loop that starts and ends at the link vertex
-        detours.setdefault(i, []).append(np.concatenate([loop, hub[i:i + 1]]))  # ... then back to the hub vertex
-    out = []
-    for i, p in enumerate(hub):
-        out.append(p[None, :])
-        for d in detours.get(i, []):
-            out.append(d)
-    return np.concatenate(out)
+    if len(rings) == 1:
+        return rings[0]
+    root = int(np.argmax([abs(cv2.contourArea(r.astype(np.float32))) for r in rings]))
+    linked, todo = [root], set(range(len(rings))) - {root}
+    attach: dict[int, dict[int, list[tuple[int, int]]]] = {k: {} for k in range(len(rings))}  # node -> vertex -> [(child, child vertex)]
+    while todo:
+        best = None
+        for a in linked:
+            for b in todo:
+                i, j = _closest_pair(rings[a], rings[b])
+                d = float(((rings[a][i] - rings[b][j]) ** 2).sum())
+                if best is None or d < best[0]:
+                    best = (d, a, i, b, j)
+        _, a, i, b, j = best
+        attach[a].setdefault(i, []).append((b, j))
+        linked.append(b)
+        todo.discard(b)
+
+    def walk(node: int, start: int, close: bool) -> list[np.ndarray]:
+        ring, seq = rings[node], []
+        for t in range(len(ring)):
+            v = (start + t) % len(ring)
+            seq.append(ring[v])
+            for child, cv in attach[node].get(v, []):
+                seq.extend(walk(child, cv, True))  # out along the bridge, round the child, back to its link vertex
+                seq.append(ring[v])                # ... and back along the same bridge
+        if close:
+            seq.append(ring[start])
+        return seq
+
+    return np.asarray(walk(root, 0, False))
 
 
 def _outer_rings(contour_px: np.ndarray) -> list[np.ndarray]:

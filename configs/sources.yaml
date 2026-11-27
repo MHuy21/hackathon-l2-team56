@@ -1,0 +1,43 @@
+# Public / external data sources used for training, with the class mapping applied by the converters.
+# The human-readable table for the report lives in hackathon-l2-docs/plan/datasets.md (kept in sync by B).
+# Image counts are filled from each converter's manifest after a run.
+
+coco2017:
+  name: COCO 2017 (instances, train2017 + val2017)
+  url: https://cocodataset.org/#download
+  annotations_url: http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+  license: >-
+    Annotations CC BY 4.0 (COCO Consortium); images are Flickr photos under the per-image license recorded in
+    manifest_coco.csv (license_id / license columns).
+  converter: scripts/data/coco_to_yoloseg.py
+  selection: >-
+    road scenes only (>= 1 car/bus/truck/motorcycle/bicycle/traffic light/stop sign); images with crowd regions of a
+    used category or with a train / airplane / boat are skipped; seeded (TEAM_ID=61) weighted sample favouring rare classes.
+  target_images: 3500
+  images_used: 2925        # run 2026-11-27 on Colab: 3500 selected, 569 skipped (rider candidates), 6 only tiny objects
+  instances: {Car: 4987, Bus: 942, Truck: 1111, Other vehicle: 0, Motorcycle: 580, Motorcyclist: 0, Bicycle: 734,
+              Cyclist: 0, Pedestrian: 4874, Sign: 647, Traffic light: 1552}
+  artifact: Google Drive team56/coco_r00.zip (images, labels, manifest_coco.csv, review_riders.csv)
+  mapping:
+    car: Car
+    bus: Bus
+    truck: Truck
+    traffic light: Traffic light
+    stop sign: Sign
+    motorcycle: Motorcycle            # Motorcyclist when a person sits on it (rider_merge, one instance)
+    bicycle: Bicycle                  # Cyclist when ridden (rider_merge, one instance)
+    person: Pedestrian                # merged into Motorcyclist/Cyclist when riding; dropped when inside a car/bus/truck
+  rider_policy: >-
+    skip (default). Geometric rider detection was checked by eye on 40 COCO val2017 candidates: ~1 in 4 is a person
+    standing next to / behind a parked bike (bike shows, posing, cafes), and COCO keypoints did not separate the two.
+    Images with an undecided person/two-wheeler candidate are skipped (~16% of the selection) and listed in
+    review_riders.csv; a reviewed copy can be fed back with --rider-decisions. Result: COCO adds Motorcycle/Bicycle
+    (parked) but no Motorcyclist/Cyclist; riders come from Vietnamese data.
+  post_processing:
+    - masks made disjoint, front object keeps pixels (mask_ops.resolve_overlaps)
+    - objects with visible short side < 1.25% of the image long side or area < 64 px at 640 scale removed
+  known_gaps:
+    - COCO "truck" includes pickups, which the guideline puts in Car
+    - only stop signs are labelled; other traffic signs in these photos are unlabelled (Sign recall may suffer)
+    - no tricycle / cyclo / trailer / construction vehicle classes (Other vehicle never appears)
+    - mostly non-Vietnamese street scenes (domain gap)

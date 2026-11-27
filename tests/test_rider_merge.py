@@ -69,6 +69,25 @@ def test_no_vehicles_all_pedestrians():
     assert classes(merge_riders([RIDER, WALKER])) == [PEDESTRIAN, PEDESTRIAN]
 
 
+def test_passenger_seen_through_car_window_is_dropped():
+    car = rect(100, 200, 400, 360)
+    passenger = person(180, 215, 230, 290)       # head + torso in the window, no feet on the road
+    ped_front = person(250, 230, 290, 380)       # pedestrian in front of the car: feet below the car bottom
+    ped_behind = person(320, 150, 350, 250)      # standing behind: head above the roof
+    from robotaxi.rider_merge import drop_passengers, inside_vehicle
+    assert inside_vehicle(passenger, car)
+    assert drop_passengers([passenger, ped_front, ped_behind], [car]) == [1, 2]
+
+
+def test_decisions_override_geometry():
+    from robotaxi.rider_merge import rider_candidates
+    assert rider_candidates([RIDER, WALKER], [MOTO]) == {0: 0}
+    assert classes(merge_riders([RIDER], [MOTO], decisions=[False])) == [MOTORCYCLE, PEDESTRIAN]
+    assert classes(merge_riders([RIDER], [MOTO], decisions=[True])) == [MOTORCYCLIST]
+    assert classes(merge_riders([RIDER], [MOTO], decisions=[None])) == [MOTORCYCLIST]
+    assert classes(merge_riders([WALKER], [MOTO], decisions=[True])) == [MOTORCYCLE, PEDESTRIAN]  # not a candidate
+
+
 def test_thresholds_are_configurable():
     strict = RiderMergeConfig(min_lower_inside=1.01)
     assert classes(merge_riders([RIDER], [MOTO], cfg=strict)) == [MOTORCYCLE, PEDESTRIAN]

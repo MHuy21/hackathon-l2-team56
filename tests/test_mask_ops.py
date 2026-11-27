@@ -43,6 +43,30 @@ def test_three_pieces_joined():
     assert mo.mask_iou(m, back) > 0.98
 
 
+def _proper_crossings(p):
+    """Same test as the official notebook's polygon_self_intersects (proper crossings of non-adjacent edges)."""
+    n = len(p)
+    a, b = p, np.roll(p, -1, axis=0)
+
+    def orient(P, Q, R):
+        return (Q[..., 0] - P[..., 0]) * (R[..., 1] - P[..., 1]) - (Q[..., 1] - P[..., 1]) * (R[..., 0] - P[..., 0])
+
+    pa, pb, pc, pd = a[:, None], b[:, None], a[None], b[None]
+    cr = (orient(pa, pb, pc) * orient(pa, pb, pd) < 0) & (orient(pc, pd, pa) * orient(pc, pd, pb) < 0)
+    idx = np.arange(n)
+    gap = np.abs(idx[:, None] - idx[None])
+    return int((cr & ~((gap <= 1) | (gap == n - 1))).sum())
+
+
+def test_joined_pieces_do_not_cross_a_middle_piece():
+    # big piece left, small piece in the middle, piece on the right: a bridge big->right would cut the middle one
+    m = _mask(lambda x: (cv2.ellipse(x, (150, 265), (100, 60), 0, 0, 360, 1, -1), cv2.rectangle(x, (280, 240), (300, 290), 1, -1),
+                         cv2.rectangle(x, (330, 250), (400, 280), 1, -1)))
+    poly = mo.mask_to_polygon(m)
+    assert _proper_crossings(poly * [W, H]) == 0
+    assert mo.mask_iou(m, mo.poly_to_mask(poly, H, W)) > 0.999
+
+
 def test_specks_dropped_and_empty_mask():
     assert mo.mask_to_polygon(np.zeros((H, W), bool)) is None
     m = _mask(lambda x: x.__setitem__((5, 5), 1))

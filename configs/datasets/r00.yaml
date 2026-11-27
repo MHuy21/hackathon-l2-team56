@@ -1,0 +1,17 @@
+# Round 0 (baseline): COCO traffic subset + Vietnamese box dataset segmented with SAM2.
+# Val must be Vietnamese street images (closest to the hidden test set). Until B delivers the golden val,
+# the VN box->SAM source is split 80/20 ("temporary val", noted in the experiment log).
+name: du_lieu_r00
+seed: 61
+near_dup_hamming: 2
+min_val_per_class: 10
+sources:
+  - name: coco2017
+    prefix: coco
+    path: data/interim/coco          # unzip Drive team56/coco_r00.zip here (images/, labels/)
+    role: train
+  - name: vntraffic
+    path: data/interim/vntraffic     # output of scripts/data/bbox_to_seg_sam.py (B picks the dataset)
+    role: auto
+    val_ratio: 0.2
+    group_regex: '^(.*?)(?:_(?:jpe?g|png))?\.rf\.[0-9a-f]+$'   # Roboflow augmented copies of one photo share a group

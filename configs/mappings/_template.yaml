@@ -1,0 +1,27 @@
+# Class mapping for one box-only dataset, used by scripts/data/bbox_to_seg_sam.py.
+# Copy to configs/mappings/<dataset>.yaml and list EVERY class name of the dataset's data.yaml.
+#
+# Allowed targets:
+#   - a competition class: Car, Bus, Truck, Other vehicle, Motorcycle, Motorcyclist, Bicycle, Cyclist,
+#                          Pedestrian, Sign, Traffic light
+#   - a generic part that goes through rider_merge: person, motorcycle, bicycle
+#       (use these when the dataset boxes the person and the bike SEPARATELY)
+#   - null: drop the class
+#
+# Pick a competition class directly only when the source box already matches the guideline
+# (e.g. a "motorbike_with_rider" box covering bike AND rider -> Motorcyclist).
+dataset:
+  name: example_vn_traffic
+  url: https://universe.roboflow.com/<workspace>/<project>
+  license: CC BY 4.0
+  version: 1
+mapping:
+  car: Car
+  bus: Bus
+  truck: Truck
+  motorbike: motorcycle
+  bicycle: bicycle
+  person: person
+  traffic_sign: Sign
+  traffic_light: Traffic light
+  billboard: null
