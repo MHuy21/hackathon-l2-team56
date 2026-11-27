@@ -1,0 +1,37 @@
+# --- Data & artifacts (stored on Kaggle Dataset / Google Drive, never in git) ---
+/data/
+/work/
+/runs/
+*.zip
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.mp4
+*.mov
+*.avi
+# keep figures that explain experiments
+!experiments/**/*.png
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
