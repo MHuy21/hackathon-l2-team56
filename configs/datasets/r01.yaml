@@ -1,0 +1,24 @@
+# Round 1: R0 sources all go to train; the hand-corrected golden val (B, CVAT export) becomes the only val.
+# Golden val images were picked from the VN drafts: their draft copies in train are removed by the builder
+# (exact sha256 duplicate, or dHash near-duplicate if CVAT re-encoded the image), so there is no train/val leak.
+name: du_lieu_r01
+seed: 61
+near_dup_hamming: 2
+min_val_per_class: 10
+sources:
+  - name: golden_val
+    prefix: gv
+    path: data/interim/golden_val                # CVAT export of the corrected golden val (images/, labels/)
+    role: val
+  - name: coco2017
+    prefix: coco
+    path: data/interim/coco
+    role: train
+  - name: vn_roboflow_kien
+    prefix: rfkien
+    path: data/interim/drafts/roboflow_kien      # drafts, plus any images B corrected since R0 (same file names)
+    role: train
+  - name: vn_kaggle_duongtran
+    prefix: kgvn
+    path: data/interim/drafts/kaggle_vn
+    role: train
