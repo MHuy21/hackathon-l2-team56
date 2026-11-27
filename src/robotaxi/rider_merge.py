@@ -67,19 +67,56 @@ def rider_score(person: np.ndarray, vehicle: np.ndarray, cfg: RiderMergeConfig =
     return frac if frac >= cfg.min_lower_inside else 0.0
 
 
+def inside_vehicle(person: np.ndarray, vehicle: np.ndarray, margin: float = 0.05, feet_gap: float = 0.15) -> bool:
+    """True when ``person`` is a passenger seen through the windows of a car / bus / truck (guideline: do NOT label).
+
+    The visible person box lies inside the (slightly widened) vehicle box and the feet stop clearly above the
+    vehicle's ground line. A pedestrian in front of or behind the vehicle fails one of the two: feet reach the ground
+    line, or the head sticks out above the roof.
+    """
+    pb, vb = bbox_of_mask(person), bbox_of_mask(vehicle)
+    if pb is None or vb is None:
+        return False
+    px0, py0, px1, py1 = pb
+    vx0, vy0, vx1, vy1 = vb
+    mx, my = margin * (vx1 - vx0), margin * (vy1 - vy0)
+    within = px0 >= vx0 - mx and px1 <= vx1 + mx and py0 >= vy0 - my and py1 <= vy1 + my
+    return within and py1 < vy1 - feet_gap * (vy1 - vy0)
+
+
+def drop_passengers(persons: Sequence[np.ndarray], vehicles: Sequence[np.ndarray]) -> list[int]:
+    """Indices of ``persons`` to KEEP: everyone except passengers inside one of ``vehicles`` (cars, buses, trucks)."""
+    return [i for i, p in enumerate(persons) if not any(inside_vehicle(p, v) for v in vehicles)]
+
+
+def rider_candidates(persons: Sequence[np.ndarray], motorcycles: Sequence[np.ndarray] = (), bicycles: Sequence[np.ndarray] = (),
+                     cfg: RiderMergeConfig = DEFAULT_CONFIG) -> dict[int, int]:
+    """``{person index: vehicle index}`` (vehicles = motorcycles then bicycles) for persons that MIGHT sit on a
+    two-wheeler according to the geometric tests. Measured on COCO val2017: about 1 in 4 of these is in fact standing
+    next to / behind a parked bike, so callers decide what to do with them (see ``decisions`` in merge_riders)."""
+    vehicles = list(motorcycles) + list(bicycles)
+    out = {}
+    for pi, p in enumerate(persons):
+        scores = [rider_score(p, v, cfg) for v in vehicles]
+        if scores and max(scores) > 0:
+            out[pi] = int(np.argmax(scores))
+    return out
+
+
 def merge_riders(persons: Sequence[np.ndarray], motorcycles: Sequence[np.ndarray] = (), bicycles: Sequence[np.ndarray] = (),
-                 cfg: RiderMergeConfig = DEFAULT_CONFIG) -> list[tuple[int, np.ndarray]]:
+                 cfg: RiderMergeConfig = DEFAULT_CONFIG, decisions: Sequence[bool | None] | None = None) -> list[tuple[int, np.ndarray]]:
     """``[(class id, mask)]`` in competition classes from generic person / motorcycle / bicycle masks.
 
-    Output order: merged and plain vehicles first (motorcycles, then bicycles, in input order), then pedestrians.
-    Masks are unions and may still overlap with other objects: run ``mask_ops.resolve_overlaps`` afterwards.
+    ``decisions[i]`` (optional, one per person) overrides the geometry for a rider CANDIDATE: True = merge with its
+    vehicle, False = keep as Pedestrian, None = trust the geometric tests. Persons that are not candidates are always
+    pedestrians. Output order: merged and plain vehicles first (motorcycles, then bicycles, in input order), then
+    pedestrians. Masks are unions and may still overlap with other objects: run ``mask_ops.resolve_overlaps`` afterwards.
     """
     vehicles = [(MOTORCYCLE, MOTORCYCLIST, m) for m in motorcycles] + [(BICYCLE, CYCLIST, m) for m in bicycles]
     riders: dict[int, list[int]] = {v: [] for v in range(len(vehicles))}
-    for pi, p in enumerate(persons):
-        scores = [rider_score(p, v[2], cfg) for v in vehicles]
-        if scores and max(scores) > 0:
-            riders[int(np.argmax(scores))].append(pi)
+    for pi, vi in rider_candidates(persons, motorcycles, bicycles, cfg).items():
+        if decisions is None or decisions[pi] is None or decisions[pi]:
+            riders[vi].append(pi)
     out: list[tuple[int, np.ndarray]] = []
     used: set[int] = set()
     for vi, (plain_cls, rider_cls, vmask) in enumerate(vehicles):
