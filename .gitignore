@@ -35,3 +35,6 @@ venv/
 .DS_Store
 Thumbs.db
 .claude/settings.local.json
+
+# executed notebooks written back by colab-cli (large, contain images)
+notebooks/runs/*_output.ipynb

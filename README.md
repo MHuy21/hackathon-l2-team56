@@ -29,6 +29,10 @@ python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash
 pip install -r requirements.txt
 ```
 
+## Chạy trên Colab từ terminal
+
+Xem [scripts/colab/README.md](scripts/colab/README.md): `google-colab-cli` (qua WSL) chạy gán nháp, build zip, train và tải `submission.zip` bằng `scripts/colab/pipeline.sh`.
+
 ## Tái lập kết quả
 
 1. Dựng zip dữ liệu từ manifest (sẽ bổ sung ở `scripts/data/build_dataset.py`).
