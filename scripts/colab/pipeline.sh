@@ -53,7 +53,8 @@ case "$step" in
     echo "manifests saved in manifests/ (commit them)" ;;
   train)
     round="${1:-r00}"; epochs="${2:-40}"
-    python3 scripts/colab/make_train_notebook.py --round "$round" --epochs "$epochs"
+    # the dataset zip is read on the VM itself (built there by `build`), not through the Drive mount
+    python3 scripts/colab/make_train_notebook.py --round "$round" --epochs "$epochs"       --dataset-path "/content/team56/data/processed/du_lieu_${round}.zip"
     colab exec -s "$SESSION" --timeout 0 -f "notebooks/runs/train_${round}.ipynb"
     echo "executed notebook: notebooks/runs/train_${round}_output.ipynb" ;;
   fetch)

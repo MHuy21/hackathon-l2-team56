@@ -32,7 +32,7 @@ from robotaxi.autolabel import (  # noqa: E402
 from robotaxi.classes import CLASSES, NC, TEAM_ID  # noqa: E402
 from robotaxi.sources.bbox_sam import ultralytics_sam_segmenter  # noqa: E402
 from robotaxi.sources.coco import class_counts  # noqa: E402
-from robotaxi.yoloseg_io import iter_images, write_labels  # noqa: E402
+from robotaxi.yoloseg_io import iter_images, read_labels, write_labels  # noqa: E402
 
 FLAG_KEYS = ("detections", "low_score", "rider_merges", "riders", "passengers_dropped")
 
@@ -78,7 +78,15 @@ def main(argv: list[str] | None = None) -> int:
     for k, img in enumerate(images, 1):
         out_img = args.out / "images" / img.name
         out_lbl = args.out / "labels" / f"{img.stem}.txt"
-        if out_lbl.is_file() and img.name in done:
+        # Resume: an image is done when both its copy and its label exist. The report is only written at the end,
+        # so after an interruption the finished images are known from their files (flag counts are then unknown).
+        if out_lbl.is_file() and out_img.is_file():
+            if img.name not in done:
+                insts = read_labels(out_lbl)
+                row = {"file": img.name, "instances": len(insts), **{f: 0 for f in FLAG_KEYS}, "priority": 0}
+                row.update({f"n_{c.replace(' ', '_')}": n for c, n in zip(CLASSES, class_counts(insts))})
+                rows.append(row)
+                done.add(img.name)
             continue
         with Image.open(img) as im:
             rgb = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
@@ -91,7 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         row.update({f"n_{c.replace(' ', '_')}": n for c, n in zip(CLASSES, class_counts(res.instances))})
         rows.append(row)
         if k % 25 == 0:
-            print(f"  {k}/{len(images)}  {(time.time() - t0) / k:.2f} s/image")
+            # flush: run through a pipe (colab-cli job), stdout is block-buffered and progress would show up late
+            print(f"  {k}/{len(images)}  {(time.time() - t0) / k:.2f} s/image", flush=True)
 
     args.out.mkdir(parents=True, exist_ok=True)
     rows.sort(key=lambda r: (-int(r["priority"]), r["file"]))

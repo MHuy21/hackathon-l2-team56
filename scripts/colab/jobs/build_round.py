@@ -17,13 +17,15 @@ import zipfile
 
 ROUND = os.environ.get("ROUND", "r00")
 DRIVE = os.environ.get("DRIVE_DIR", "/content/drive/MyDrive/team56")
+DRAFTS = os.environ.get("DRAFTS_DIR", "/content/drafts")  # local drafts written by jobs/autolabel_vn.py
 REPO = "/content/team56"
 INTERIM = f"{REPO}/data/interim"
 
 
 def run_live(cmd):
     print("$", " ".join(cmd), flush=True)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=REPO)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            env={**os.environ, "PYTHONUNBUFFERED": "1"}, cwd=REPO)
     for line in proc.stdout:
         print(line, end="", flush=True)
     if proc.wait() != 0:
@@ -45,9 +47,13 @@ if not glob.glob(f"{coco}/images/*"):
         zf.extractall(coco)
 print(f"coco: {len(glob.glob(f'{coco}/images/*'))} images", flush=True)
 
-# VN drafts: local copies (reading thousands of small files through the Drive mount is slow)
+# VN drafts: from the VM's local disk (autolabel_vn.py), else unpacked from their Drive backup zip
 for name in ("roboflow_kien", "kaggle_vn"):
-    fresh_copy(f"{DRIVE}/drafts/{name}", f"{INTERIM}/drafts/{name}")
+    local = f"{DRAFTS}/{name}"
+    if not os.path.isdir(f"{local}/labels"):
+        with zipfile.ZipFile(f"{DRIVE}/drafts_{name}.zip") as zf:
+            zf.extractall(local)
+    fresh_copy(local, f"{INTERIM}/drafts/{name}")
 
 # golden val: exclusion list for every round, the corrected labels for R1+
 excl = glob.glob("/content/vn_raw/golden_val_150/**/exclude_from_train_same_frames.csv", recursive=True)
@@ -66,9 +72,10 @@ run_live([sys.executable, "scripts/data/build_dataset.py", recipe, "--check"])
 run_live([sys.executable, "scripts/data/build_dataset.py", recipe])
 
 name = f"du_lieu_{ROUND}"
+print(f"\nzip on the VM: {REPO}/data/processed/{name}.zip  (DATASET_PATH used by `pipeline.sh train`)", flush=True)
+# backup on Drive: one large file per round (no burst of small writes)
 os.makedirs(f"{DRIVE}/manifests", exist_ok=True)
 shutil.copyfile(f"{REPO}/data/processed/{name}.zip", f"{DRIVE}/{name}.zip")
 for ext in ("csv", "json"):
     shutil.copyfile(f"{REPO}/manifests/{name}.{ext}", f"{DRIVE}/manifests/{name}.{ext}")
-print(f"\nzip on Drive: {DRIVE}/{name}.zip  (DATASET_PATH for the training notebook)", flush=True)
-print(f"manifests:    {DRIVE}/manifests/{name}.csv/.json  and on the VM in {REPO}/manifests/", flush=True)
+print(f"backup on Drive: {DRIVE}/{name}.zip, {DRIVE}/manifests/{name}.csv/.json", flush=True)

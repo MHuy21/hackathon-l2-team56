@@ -40,13 +40,13 @@ def set_assignment(src: str, name: str, value: str) -> str:
     return pattern.sub(lambda m: f"{name} = {value}" + (f"  {m.group(1)}" if m.group(1) else ""), src)
 
 
-def build(round_name: str, epochs: int, batch: int, drive_dir: str) -> dict:
+def build(round_name: str, epochs: int, batch: int, drive_dir: str, dataset_path: str | None = None) -> dict:
     nb = json.loads(SOURCE.read_text(encoding="utf-8"))
     i = param_cell_index(nb)
     src = "".join(nb["cells"][i]["source"])
     if "TEAM_ID = 61" not in src:
         raise SystemExit("TEAM_ID is not 61 in the source notebook")
-    src = set_assignment(src, "DATASET_PATH", json.dumps(f"{drive_dir}/du_lieu_{round_name}.zip"))
+    src = set_assignment(src, "DATASET_PATH", json.dumps(dataset_path or f"{drive_dir}/du_lieu_{round_name}.zip"))
     src = set_assignment(src, "EPOCHS", str(epochs))
     src = set_assignment(src, "BATCH", str(batch))
     # DRIVE_OUTPUT_DIR is a two-line expression in the team copy: replace the whole statement
@@ -67,9 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--epochs", type=int, default=40)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--drive-dir", default="/content/drive/MyDrive/team56")
+    ap.add_argument("--dataset-path", default=None, help="dataset zip path on the VM (default: <drive-dir>/du_lieu_<round>.zip)")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
-    nb = build(args.round, args.epochs, args.batch, args.drive_dir)
+    nb = build(args.round, args.epochs, args.batch, args.drive_dir, args.dataset_path)
     out = args.out or ROOT / "notebooks" / "runs" / f"train_{args.round}.ipynb"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")

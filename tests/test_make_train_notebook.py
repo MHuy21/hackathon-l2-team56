@@ -30,3 +30,10 @@ def test_cli_writes_runs_copy(tmp_path):
     assert mtn.main(["--round", "r01", "--epochs", "30", "--out", str(out)]) == 0
     nb = json.loads(out.read_text(encoding="utf-8"))
     assert "du_lieu_r01.zip" in "".join(nb["cells"][mtn.param_cell_index(nb)]["source"])
+
+
+def test_dataset_path_override_for_vm_local_zip():
+    nb = mtn.build("r00", 40, 16, "/content/drive/MyDrive/team56", "/content/team56/data/processed/du_lieu_r00.zip")
+    g = {"IN_COLAB": True, "os": __import__("os")}
+    exec("".join(nb["cells"][mtn.param_cell_index(nb)]["source"]), g)
+    assert g["DATASET_PATH"] == "/content/team56/data/processed/du_lieu_r00.zip"
