@@ -46,19 +46,32 @@ def area_at_scale(pixels: float, height: int, width: int, imgsz: int = IMGSZ) ->
     return float(pixels) * r * r
 
 
-def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
-    inter = np.logical_and(a, b).sum()
-    union = np.logical_or(a, b).sum()
+def mask_iou(a: np.ndarray, b: np.ndarray, box_a=None, box_b=None) -> float:
+    """IoU of two boolean masks. Computed inside the union of their boxes only (full-frame logical ops on a
+    1778x857 image made drafting a busy street ~15 s/image); boxes are recomputed when not given."""
+    box_a = bbox_of_mask(a) if box_a is None else box_a
+    box_b = bbox_of_mask(b) if box_b is None else box_b
+    if box_a is None or box_b is None:
+        return 0.0
+    if box_a[2] <= box_b[0] or box_b[2] <= box_a[0] or box_a[3] <= box_b[1] or box_b[3] <= box_a[1]:
+        return 0.0  # disjoint boxes: no shared pixel
+    x0, y0 = min(box_a[0], box_b[0]), min(box_a[1], box_b[1])
+    x1, y1 = max(box_a[2], box_b[2]), max(box_a[3], box_b[3])
+    ca, cb = a[y0:y1, x0:x1], b[y0:y1, x0:x1]
+    inter = np.count_nonzero(ca & cb)
+    union = np.count_nonzero(ca | cb)
     return float(inter / union) if union else 0.0
 
 
 # ----------------------------------------------------------------------------------------------- size rules
 def bbox_of_mask(mask: np.ndarray) -> tuple[int, int, int, int] | None:
-    """(x0, y0, x1, y1) inclusive-exclusive of the True pixels, or None for an empty mask."""
-    ys, xs = np.nonzero(mask)
-    if xs.size == 0:
+    """(x0, y0, x1, y1) inclusive-exclusive of the True pixels, or None for an empty mask.
+    Row/column projections (any) instead of np.nonzero: ~10x faster on a full-size frame."""
+    rows = np.flatnonzero(mask.any(axis=1))
+    if rows.size == 0:
         return None
-    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+    cols = np.flatnonzero(mask.any(axis=0))
+    return int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1
 
 
 def too_small(mask: np.ndarray, min_short_side_ratio: float = MIN_SHORT_SIDE_RATIO, min_area_640: float = MIN_GT_AREA_PX) -> bool:

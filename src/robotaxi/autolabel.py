@@ -86,11 +86,12 @@ class DraftResult:
 
 def dedupe(dets: Sequence[Detection], iou: float) -> list[Detection]:
     """Greedy cross-detector de-duplication by mask IoU, highest score first."""
-    kept: list[Detection] = []
+    kept: list[tuple[Detection, tuple | None]] = []
     for d in sorted(dets, key=lambda d: -d.score):
-        if all(mask_iou(d.mask, k.mask) < iou for k in kept):
-            kept.append(d)
-    return kept
+        box = bbox_of_mask(d.mask)  # once per detection, reused for every pair
+        if all(mask_iou(d.mask, k.mask, box, kb) < iou for k, kb in kept):
+            kept.append((d, box))
+    return [d for d, _ in kept]
 
 
 def refine_with_sam(image: np.ndarray, dets: Sequence[Detection], segmenter: Segmenter) -> list[Detection]:
