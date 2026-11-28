@@ -56,12 +56,16 @@ class SourceSpec:
     max_images: int | None = None
     group_regex: str | None = None
     prefix: str | None = None  # output file names start with "<prefix>_" (default: the source name)
+    exclude_list: Path | None = None   # CSV / text of images that must not be used (e.g. golden-val frames)
+    exclude_window: int = 0            # also drop frames of the same camera within +-N frames of an excluded one
+    frame_regex: str = r"^(.*)_(\d+)$"  # stem -> (camera, frame number), e.g. cam_01_00057 -> (cam_01, 57)
 
     def __post_init__(self) -> None:
         if self.role not in ROLES:
             raise ValueError(f"source {self.name}: role must be one of {ROLES}, got {self.role!r}")
         self.path = Path(self.path)
         self.prefix = self.prefix or self.name
+        self.exclude_list = Path(self.exclude_list) if self.exclude_list else None
 
 
 @dataclass
@@ -75,7 +79,12 @@ class Recipe:
     @classmethod
     def from_yaml(cls, path: str | Path, base: str | Path = ".") -> "Recipe":
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-        srcs = [SourceSpec(**{**s, "path": Path(base) / s["path"]}) for s in data["sources"]]
+        srcs = []
+        for s in data["sources"]:
+            s = {**s, "path": Path(base) / s["path"]}
+            if s.get("exclude_list"):
+                s["exclude_list"] = Path(base) / s["exclude_list"]
+            srcs.append(SourceSpec(**s))
         extra = {k: data[k] for k in ("seed", "near_dup_hamming", "min_val_per_class") if k in data}
         return cls(data["name"], srcs, **extra)
 
@@ -136,13 +145,65 @@ def _group_of(stem: str, regex: str | None) -> str:
     return stem
 
 
-def collect(spec: SourceSpec, errors: list[str]) -> list[Item]:
-    """Items of one source (labels validated, per-class counts filled)."""
+EXCLUDE_COLUMNS = ("filename", "selected_filename", "file", "image", "exclude_source_relative_path", "source_relative_path")
+
+
+def read_exclude_list(path: Path) -> set[str]:
+    """Image stems listed in a CSV (any of EXCLUDE_COLUMNS, else the first column) or a plain one-per-line file."""
+    text = path.read_text(encoding="utf-8-sig")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return set()
+    header = [h.strip().lower() for h in lines[0].split(",")]
+    cols = [i for i, h in enumerate(header) if h in EXCLUDE_COLUMNS]
+    if cols:
+        rows = list(csv.reader(lines[1:]))
+        values = [r[i] for r in rows for i in cols if i < len(r)]
+    else:
+        values = [ln.split(",")[0] for ln in lines]
+    return {Path(v.strip().replace("\\", "/")).stem for v in values if v.strip()}
+
+
+def _exclusion(spec: SourceSpec):
+    """Function stem -> reason (or None) for the source's exclude list and frame window."""
+    if spec.exclude_list is None:
+        return lambda stem: None
+    banned = read_exclude_list(spec.exclude_list)
+    rx = re.compile(spec.frame_regex)
+    frames: dict[str, list[int]] = defaultdict(list)
+    for b in banned:
+        m = rx.match(b)
+        if m:
+            frames[m.group(1)].append(int(m.group(2)))
+
+    def why(stem: str) -> str | None:
+        if stem in banned:
+            return f"listed in {spec.exclude_list.name}"
+        if spec.exclude_window > 0:
+            m = rx.match(stem)
+            if m and any(abs(int(m.group(2)) - f) <= spec.exclude_window for f in frames.get(m.group(1), ())):
+                return f"within {spec.exclude_window} frames of an excluded {m.group(1)} frame"
+        return None
+
+    return why
+
+
+def collect(spec: SourceSpec, errors: list[str], dropped: list[tuple[str, str]] | None = None) -> list[Item]:
+    """Items of one source (labels validated, per-class counts filled, excluded frames removed)."""
     if not spec.path.is_dir():
         errors.append(f"{spec.name}: folder not found: {spec.path}")
         return []
+    if spec.exclude_list is not None and not spec.exclude_list.is_file():
+        errors.append(f"{spec.name}: exclude list not found: {spec.exclude_list}")
+        return []
+    excluded = _exclusion(spec)
     items = []
     for img in iter_images(spec.path):
+        reason = excluded(img.stem)
+        if reason:
+            if dropped is not None:
+                dropped.append((f"{spec.prefix}_{img.stem}", reason))
+            continue
         lab = label_path_for(img)
         if not lab.is_file():
             errors.append(f"{spec.name}: {img.relative_to(spec.path)} has no label file (would become a background image)")
@@ -178,7 +239,7 @@ def build(recipe: Recipe) -> BuildReport:
     dropped: list[tuple[str, str]] = []
     items: list[Item] = []
     for spec in recipe.sources:
-        got = collect(spec, errors)
+        got = collect(spec, errors, dropped)
         if spec.max_images and len(got) > spec.max_images:
             got = sorted(random.Random(f"{recipe.seed}:{spec.name}:sub").sample(got, spec.max_images), key=lambda it: it.out_stem)
         assign_splits(got, spec, recipe.seed)

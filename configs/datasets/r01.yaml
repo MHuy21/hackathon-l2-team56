@@ -21,4 +21,8 @@ sources:
   - name: vn_kaggle_duongtran
     prefix: kgvn
     path: data/interim/drafts/kaggle_vn
+    # golden val = 150 frames of this dataset's traffic cameras: never train on them or on near-identical
+    # neighbouring frames of the same camera (B's list, + a +-25-frame window)
+    exclude_list: manifests/golden_val_150/exclude_from_train_same_frames.csv
+    exclude_window: 25
     role: train

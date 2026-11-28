@@ -100,3 +100,25 @@ def test_recipe_from_yaml(tmp_path):
     assert r.seed == 61 and r.sources[0].path == tmp_path / "d/a"
     with pytest.raises(ValueError):
         SourceSpec("a", tmp_path, "test")
+
+
+def test_exclude_list_and_frame_window_with_b_csv_format(tmp_path):
+    stems = [f"cam_01_{f:05d}" for f in (30, 50, 57, 65, 90)] + ["cam_02_00057", "cam_02_00200"]
+    src = make_source(tmp_path, "kg", 0, stems=stems)
+    excl = tmp_path / "exclude_from_train_same_frames.csv"
+    excl.write_text("\ufeffselected_filename,exclude_source_relative_path,reason\n"
+                    "cam_01_00057.jpg,daytime-dataset/daytime/cam_01_00057.jpg,selected_original_frame\n"
+                    "cam_02_00200.jpg,daytime-dataset/daytime/cam_02_00200.jpg,selected_original_frame\n", encoding="utf-8")
+    spec = SourceSpec("kg", src, "train", prefix="kgvn", exclude_list=excl, exclude_window=10)
+    rep = build(Recipe("t", [spec, SourceSpec("val", make_source(tmp_path, "v", 2, seed=4), "val")], min_val_per_class=1))
+    kept = sorted(it.out_stem for it in rep.items if it.source == "kg")
+    # cam_01: 57 listed, 50 and 65 within 10 frames; 30 and 90 kept. cam_02: 200 listed; 57 kept (other camera window)
+    assert kept == ["kgvn_cam_01_00030", "kgvn_cam_01_00090", "kgvn_cam_02_00057"]
+    reasons = dict(rep.dropped)
+    assert "listed" in reasons["kgvn_cam_01_00057"] and "within 10 frames" in reasons["kgvn_cam_01_00050"]
+
+
+def test_missing_exclude_list_is_an_error(tmp_path):
+    src = make_source(tmp_path, "kg", 2)
+    rep = build(Recipe("t", [SourceSpec("kg", src, "val", exclude_list=tmp_path / "nope.csv")]))
+    assert any("exclude list not found" in e for e in rep.errors)
